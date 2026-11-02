@@ -96,6 +96,13 @@ pub mut:
 
 const default_analytics = &AnalyticsManager{}
 
+// Config allows supplying server_url and api_key programmatically.
+pub struct Config {
+pub:
+	server_url string
+	api_key    string
+}
+
 // get returns the shared AnalyticsManager singleton.
 pub fn get() &AnalyticsManager {
 	return default_analytics
@@ -106,15 +113,28 @@ pub fn analytics() &AnalyticsManager {
 	return default_analytics
 }
 
-// init initializes analytics using settings from env, Store, or velo.toml.
-pub fn init(mut store core.Store) {
+// init initializes analytics using settings from Config, env, Store, or velo.toml.
+pub fn init(mut store core.Store, cfg ...Config) {
 	mut a := get()
-	a.ensure_inited(mut store)
+	a.ensure_inited(mut store, ...cfg)
 }
 
 // analytics_init is an alias for init.
-pub fn analytics_init(mut store core.Store) {
-	init(mut store)
+pub fn analytics_init(mut store core.Store, cfg ...Config) {
+	init(mut store, ...cfg)
+}
+
+// configure updates credentials on the analytics singleton.
+pub fn configure(server_url string, api_key string) {
+	mut a := get()
+	a.mu.lock()
+	if server_url != '' {
+		a.server_url = server_url
+	}
+	if api_key != '' {
+		a.api_key = api_key
+	}
+	a.mu.unlock()
 }
 
 // init_custom allows initializing without a core.Store instance.
@@ -237,18 +257,18 @@ fn read_velo_toml_setting(key string) string {
 }
 
 // ensure_inited initializes AnalyticsManager if it hasn't been initialized yet.
-pub fn (mut a AnalyticsManager) ensure_inited(mut store core.Store) {
+pub fn (mut a AnalyticsManager) ensure_inited(mut store core.Store, cfg ...Config) {
 	a.mu.lock()
 	if a.is_inited {
 		a.mu.unlock()
 		return
 	}
 	a.mu.unlock()
-	a.init(mut store)
+	a.init(mut store, ...cfg)
 }
 
 // init loads configuration, identifies or creates persistent player_id, and fires install / session_start.
-pub fn (mut a AnalyticsManager) init(mut store core.Store) {
+pub fn (mut a AnalyticsManager) init(mut store core.Store, cfg ...Config) {
 	a.mu.lock()
 	if a.is_inited {
 		a.mu.unlock()
@@ -257,7 +277,10 @@ pub fn (mut a AnalyticsManager) init(mut store core.Store) {
 	a.mu.unlock()
 
 	// 1. Determine Server URL
-	mut url := os.getenv('ANALYTICS_SERVER_URL')
+	mut url := if cfg.len > 0 { cfg[0].server_url } else { '' }
+	if url == '' {
+		url = os.getenv('ANALYTICS_SERVER_URL')
+	}
 	if url == '' {
 		url = store.get_string('analytics_server_url', '')
 	}
@@ -269,7 +292,10 @@ pub fn (mut a AnalyticsManager) init(mut store core.Store) {
 	}
 
 	// 2. Determine API Key
-	mut key := os.getenv('ANALYTICS_API_KEY')
+	mut key := if cfg.len > 0 { cfg[0].api_key } else { '' }
+	if key == '' {
+		key = os.getenv('ANALYTICS_API_KEY')
+	}
 	if key == '' {
 		key = store.get_string('analytics_api_key', '')
 	}
@@ -279,6 +305,15 @@ pub fn (mut a AnalyticsManager) init(mut store core.Store) {
 	if key == '' {
 		key = 'YOUR_PROJECT_API_KEY'
 	}
+
+	// Cache valid configuration to store for future runs
+	if url != '' && store.get_string('analytics_server_url', '') != url {
+		store.set_string('analytics_server_url', url)
+	}
+	if key != '' && key != 'YOUR_PROJECT_API_KEY' && store.get_string('analytics_api_key', '') != key {
+		store.set_string('analytics_api_key', key)
+	}
+	store.save() or {}
 
 	// 3. Platform & App Version
 	plat := current_platform()
